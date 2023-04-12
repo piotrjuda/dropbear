@@ -70,6 +70,7 @@ void recv_msg_userauth_success(void);
 void recv_msg_userauth_specific_60(void);
 void recv_msg_userauth_pk_ok(void);
 void recv_msg_userauth_info_request(void);
+void recv_msg_userauth_passwd_change_request(void);
 void cli_get_user(void);
 void cli_auth_getmethods(void);
 int cli_auth_try(void);
