@@ -158,4 +158,105 @@ void cli_auth_password() {
 	cli_ses.is_trivial_auth = 0;
 	TRACE(("leave cli_auth_password"))
 }
+
+void recv_msg_userauth_passwd_change_request() {
+
+	char *info = NULL;
+	char *ret = NULL;
+	char password[DROPBEAR_MAX_CLI_PASS] = { '\0' };
+	char prompt[128];
+
+	TRACE(("enter recv_msg_userauth_passwd_change_request"))
+
+	info = buf_getstring(ses.payload, NULL);
+	if (strlen(info) > 0) {
+		cleantext(info);
+		fprintf(stderr, "%s\n", info);
+	}
+	m_free(info);
+
+	/* language tag */
+	buf_eatstring(ses.payload);
+
+	CHECKCLEARTOWRITE();
+	buf_putbyte(ses.writepayload, SSH_MSG_USERAUTH_REQUEST);
+
+	buf_putstring(ses.writepayload, cli_opts.username,
+			strlen(cli_opts.username));
+
+	buf_putstring(ses.writepayload, SSH_SERVICE_CONNECTION,
+			SSH_SERVICE_CONNECTION_LEN);
+
+	buf_putstring(ses.writepayload, AUTH_METHOD_PASSWORD,
+			AUTH_METHOD_PASSWORD_LEN);
+
+	buf_putbyte(ses.writepayload, 1); /* TRUE */
+
+	snprintf(prompt, sizeof(prompt), "Enter %s@%s's old password: ",
+			cli_opts.username, cli_opts.remotehost);
+#if DROPBEAR_CLI_ASKPASS_HELPER
+	if (want_askpass()) {
+		ret = gui_getpass(prompt);
+		if (!ret) {
+			dropbear_exit("No password");
+		}
+	} else
+#endif
+	{
+		ret = getpass_or_cancel(prompt);
+	}
+	buf_putstring(ses.writepayload, ret, strlen(ret));
+	m_burn(ret, strlen(ret));
+
+	while (password[0] == '\0') {
+		snprintf(prompt, sizeof(prompt), "Enter %s@%s's new password: ",
+			cli_opts.username, cli_opts.remotehost);
+#if DROPBEAR_CLI_ASKPASS_HELPER
+		if (want_askpass()) {
+			ret = gui_getpass(prompt);
+			if (!ret) {
+				dropbear_exit("No password");
+			}
+		} else
+#endif
+		{
+			ret = getpass_or_cancel(prompt);
+		}
+
+		/* password provided by getpass is statically allocated     */
+		/* and needs to be copied to avoid losing it by overwriting */
+		strncpy(password, ret, DROPBEAR_MAX_CLI_PASS);
+
+		snprintf(prompt, sizeof(prompt), "Retype %s@%s's new password: ",
+			cli_opts.username, cli_opts.remotehost);
+#if DROPBEAR_CLI_ASKPASS_HELPER
+		if (want_askpass()) {
+			ret = gui_getpass(prompt);
+			if (!ret) {
+				m_burn(password, strlen(password));
+				dropbear_exit("No password");
+			}
+		} else
+#endif
+		{
+			ret = getpass_or_cancel(prompt);
+		}
+
+		if (strcmp(password, ret) != 0) {
+			fprintf(stderr, "Password mismatch; try again.\n");
+			m_burn(password, strlen(password));
+			password[0] = '\0';
+		}
+		if (ret != NULL) {
+			m_burn(ret, strlen(ret));
+		}
+	}
+
+	buf_putstring(ses.writepayload, password, strlen(password));
+	m_burn(password, strlen(password));
+
+	encrypt_packet();
+
+	TRACE(("leave recv_msg_userauth_passwd_change_request"))
+}
 #endif	/* DROPBEAR_CLI_PASSWORD_AUTH */
