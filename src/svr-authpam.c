@@ -43,13 +43,14 @@
 struct UserDataS {
 	char* user;
 	char* passwd;
+	char* new_passwd;
 };
 
 /* PAM conversation function - for now we only handle one message */
-int 
-pamConvFunc(int num_msg, 
+int
+pamConvFunc(int num_msg,
 		const struct pam_message **msg,
-		struct pam_response **respp, 
+		struct pam_response **respp,
 		void *appdata_ptr) {
 
 	int rc = PAM_SUCCESS;
@@ -71,17 +72,17 @@ pamConvFunc(int num_msg,
 
 	/* make a copy we can strip */
 	compare_message = m_strdup((*msg)->msg);
-	
+
 	/* Make the string lowercase. */
 	msg_len = strlen(compare_message);
 	for (i = 0; i < msg_len; i++) {
 		compare_message[i] = tolower(compare_message[i]);
 	}
 
-	/* If the string ends with ": ", remove the space. 
+	/* If the string ends with ": ", remove the space.
 	   ie "login: " vs "login:" */
-	if (msg_len > 2 
-			&& compare_message[msg_len-2] == ':' 
+	if (msg_len > 2
+			&& compare_message[msg_len-2] == ':'
 			&& compare_message[msg_len-1] == ' ') {
 		compare_message[msg_len-1] = '\0';
 	}
@@ -90,7 +91,7 @@ pamConvFunc(int num_msg,
 
 		case PAM_PROMPT_ECHO_OFF:
 
-			if (!(strcmp(compare_message, "password:") == 0)) {
+			if (strstr(compare_message, "password:") == NULL) {
 				/* We don't recognise the prompt as asking for a password,
 				   so can't handle it. Add more above as required for
 				   different pam modules/implementations. If you need
@@ -108,16 +109,20 @@ pamConvFunc(int num_msg,
 			resp = (struct pam_response*) m_malloc(sizeof(struct pam_response));
 			memset(resp, 0, sizeof(struct pam_response));
 
-			resp->resp = m_strdup(userDatap->passwd);
-			m_burn(userDatap->passwd, strlen(userDatap->passwd));
+			if (strstr(compare_message, "new")) {
+				resp->resp = m_strdup(userDatap->new_passwd);
+				m_burn(userDatap->new_passwd, strlen(userDatap->new_passwd));
+			} else {
+				resp->resp = m_strdup(userDatap->passwd);
+				m_burn(userDatap->passwd, strlen(userDatap->passwd));
+			}
 			(*respp) = resp;
 			break;
-
 
 		case PAM_PROMPT_ECHO_ON:
 
 			if (!(
-				(strcmp(compare_message, "login:" ) == 0) 
+				(strcmp(compare_message, "login:" ) == 0)
 				|| (strcmp(compare_message, "please enter username:") == 0)
 				|| (strcmp(compare_message, "username:") == 0)
 				)) {
@@ -162,7 +167,7 @@ pamConvFunc(int num_msg,
 		default:
 			TRACE(("Unknown message type"))
 			rc = PAM_CONV_ERR;
-			break;      
+			break;
 	}
 
 	m_free(compare_message);
@@ -181,30 +186,31 @@ pamConvFunc(int num_msg,
  * interactive responses, over the network. */
 void svr_auth_pam(int valid_user) {
 
-	struct UserDataS userData = {NULL, NULL};
+	struct UserDataS userData = {NULL, NULL, NULL};
 	struct pam_conv pamConv = {
 		pamConvFunc,
-		&userData /* submitted to pamvConvFunc as appdata_ptr */ 
+		&userData /* submitted to pamvConvFunc as appdata_ptr */
 	};
+
+	char* password = NULL;
+	unsigned int password_len = 0;
+	char* new_password = NULL;
+	unsigned int new_password_len = 0;
+
 	const char* printable_user = NULL;
+
+	int rc;
 
 	pam_handle_t* pamHandlep = NULL;
 
-	char * password = NULL;
-	unsigned int passwordlen;
-
-	int rc = PAM_SUCCESS;
-	unsigned char changepw;
+	unsigned char client_password_change_requested;
 
 	/* check if client wants to change password */
-	changepw = buf_getbool(ses.payload);
-	if (changepw) {
-		/* not implemented by this server */
-		send_msg_userauth_failure(0, 1);
-		goto cleanup;
+	client_password_change_requested = buf_getbool(ses.payload);
+	password = buf_getstring(ses.payload, &password_len);
+	if (client_password_change_requested) {
+		new_password = buf_getstring(ses.payload, &new_password_len);
 	}
-
-	password = buf_getstring(ses.payload, &passwordlen);
 
 	/* We run the PAM conversation regardless of whether the username is valid
 	in case the conversation function has an inherent delay.
@@ -216,6 +222,7 @@ void svr_auth_pam(int valid_user) {
 	 * function (above) which takes care of it */
 	userData.user = ses.authstate.username;
 	userData.passwd = password;
+	userData.new_passwd = new_password;
 
 	if (ses.authstate.pw_name) {
 		printable_user = ses.authstate.pw_name;
@@ -225,7 +232,7 @@ void svr_auth_pam(int valid_user) {
 
 	/* Init pam */
 	if ((rc = pam_start("sshd", NULL, &pamConv, &pamHandlep)) != PAM_SUCCESS) {
-		dropbear_log(LOG_WARNING, "pam_start() failed, rc=%d, %s", 
+		dropbear_log(LOG_WARNING, "pam_start() failed, rc=%d, %s",
 				rc, pam_strerror(pamHandlep, rc));
 		goto cleanup;
 	}
@@ -249,9 +256,8 @@ void svr_auth_pam(int valid_user) {
 #endif
 
 	/* (void) pam_set_item(pamHandlep, PAM_FAIL_DELAY, (void*) pamDelayFunc); */
-
 	if ((rc = pam_authenticate(pamHandlep, 0)) != PAM_SUCCESS) {
-		dropbear_log(LOG_WARNING, "pam_authenticate() failed, rc=%d, %s", 
+		dropbear_log(LOG_WARNING, "pam_authenticate() failed, rc=%d, %s",
 				rc, pam_strerror(pamHandlep, rc));
 		dropbear_log(LOG_WARNING,
 				"Bad PAM password attempt for '%s' from %s",
@@ -261,13 +267,44 @@ void svr_auth_pam(int valid_user) {
 		goto cleanup;
 	}
 
-	if ((rc = pam_acct_mgmt(pamHandlep, 0)) != PAM_SUCCESS) {
-		dropbear_log(LOG_WARNING, "pam_acct_mgmt() failed, rc=%d, %s", 
+	if (client_password_change_requested) {
+		rc = pam_chauthtok(pamHandlep, 0);
+		/* old password is correct, new was not accepted (e.g. is too short) */
+		if (rc == PAM_NEW_AUTHTOK_REQD) {
+			if ((rc = pam_setcred(pamHandlep, PAM_ESTABLISH_CRED)) != PAM_SUCCESS) {
+				dropbear_log(LOG_WARNING, "pam_setcred() failed, rc=%d, %s",
+						rc, pam_strerror(pamHandlep, rc));
+			}
+			dropbear_log(LOG_WARNING,
+					"Bad PAM password change attempt for '%s' from %s",
+					printable_user,
+					svr_ses.addrstring);
+			send_msg_userauth_failure(0, 1);
+			goto cleanup;
+		} else if (rc != PAM_SUCCESS) {
+			dropbear_log(LOG_WARNING, "pam_chauthtok() failed, rc=%d, %s",
+					rc, pam_strerror(pamHandlep, rc));
+			send_msg_userauth_failure(0, 1);
+			goto cleanup;
+		}
+	}
+
+	rc = pam_acct_mgmt(pamHandlep, 0);
+	if (!(rc == PAM_SUCCESS || rc == PAM_NEW_AUTHTOK_REQD)) {
+		dropbear_log(LOG_WARNING, "pam_acct_mgmt() failed, rc=%d, %s",
 				rc, pam_strerror(pamHandlep, rc));
 		dropbear_log(LOG_WARNING,
 				"Bad PAM password attempt for '%s' from %s",
 				printable_user,
 				svr_ses.addrstring);
+		send_msg_userauth_failure(0, 1);
+		goto cleanup;
+	}
+	ses.authstate.password_change = (rc == PAM_NEW_AUTHTOK_REQD);
+
+	if ((rc = pam_setcred(pamHandlep, PAM_ESTABLISH_CRED)) != PAM_SUCCESS) {
+		dropbear_log(LOG_WARNING, "pam_setcred() failed, rc=%d, %s",
+				rc, pam_strerror(pamHandlep, rc));
 		send_msg_userauth_failure(0, 1);
 		goto cleanup;
 	}
@@ -280,25 +317,33 @@ void svr_auth_pam(int valid_user) {
 	}
 
 	if (svr_opts.multiauthmethod && (ses.authstate.authtypes & ~AUTH_TYPE_PASSWORD)) {
-			/* successful PAM password authentication, but extra auth required */
-			dropbear_log(LOG_NOTICE,
-					"PAM password auth succeeded for '%s' from %s, extra auth required",
-					ses.authstate.pw_name,
-					svr_ses.addrstring);
-			ses.authstate.authtypes &= ~AUTH_TYPE_PASSWORD; /* PAM password auth ok, delete the method flag */
-			send_msg_userauth_failure(1, 0);  /* Send partial success */
-		} else {
-			/* successful authentication */
-			dropbear_log(LOG_NOTICE, "PAM password auth succeeded for '%s' from %s",
+		/* successful PAM password authentication, but extra auth required */
+		dropbear_log(LOG_NOTICE,
+				"PAM password auth succeeded for '%s' from %s, extra auth required",
 				ses.authstate.pw_name,
 				svr_ses.addrstring);
+		ses.authstate.authtypes &= ~AUTH_TYPE_PASSWORD; /* PAM password auth ok, delete the method flag */
+		send_msg_userauth_failure(1, 0);  /* Send partial success */
+	} else {
+		/* successful authentication */
+		dropbear_log(LOG_NOTICE, "PAM password auth succeeded for '%s' from %s",
+				ses.authstate.pw_name,
+				svr_ses.addrstring);
+		if (ses.authstate.password_change != 0) {
+			send_msg_userauth_passwd_change();
+		} else {
 			send_msg_userauth_success();
 		}
-		
+	}
+
 cleanup:
 	if (password != NULL) {
-		m_burn(password, passwordlen);
+		m_burn(password, password_len);
 		m_free(password);
+	}
+	if (new_password != NULL) {
+		m_burn(new_password, new_password_len);
+		m_free(new_password);
 	}
 	if (pamHandlep != NULL) {
 		TRACE(("pam_end"))

@@ -470,3 +470,22 @@ void send_msg_userauth_success() {
 	TRACE(("leave send_msg_userauth_success"))
 
 }
+
+/* Send password change request */
+void send_msg_userauth_passwd_change() {
+#if DROPBEAR_SVR_PAM_AUTH
+       const char * msg = "Password has expired. Please change it now.";
+
+       TRACE(("enter send_msg_userauth_passwd_change"))
+
+       CHECKCLEARTOWRITE();
+
+       buf_putbyte(ses.writepayload, SSH_MSG_USERAUTH_PASSWD_CHANGEREQ);
+       buf_putstring(ses.writepayload, msg, strlen(msg));
+       buf_putstring(ses.writepayload, "en", 2);
+
+       encrypt_packet();
+
+       TRACE(("leave send_msg_userauth_passwd_change"))
+#endif
+}

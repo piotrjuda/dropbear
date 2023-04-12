@@ -228,7 +228,14 @@ void svr_auth_pubkey(int valid_user) {
 					ses.authstate.pw_name,
 					signkey_name_from_type(keytype, NULL), fp,
 					svr_ses.addrstring);
-			send_msg_userauth_success();
+#if DROPBEAR_SVR_PAM_AUTH
+			if (ses.authstate.password_change != 0) {
+				send_msg_userauth_passwd_change();
+			} else
+#endif
+			{
+				send_msg_userauth_success();
+			}
 		}
 #if DROPBEAR_PLUGIN
                 if ((ses.plugin_session != NULL) && (svr_ses.plugin_instance->auth_success != NULL)) {

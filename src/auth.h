@@ -36,6 +36,7 @@ void svr_authinitialise(void);
 void recv_msg_userauth_request(void);
 void send_msg_userauth_failure(int partial, int incrfail);
 void send_msg_userauth_success(void);
+void send_msg_userauth_passwd_change(void);
 void send_msg_userauth_banner(const buffer *msg);
 void svr_auth_password(int valid_user);
 void svr_auth_pubkey(int valid_user);
@@ -118,7 +119,10 @@ struct AuthState {
 							   ~/.ssh/authorized_keys have already been
 							   logged. */
 	unsigned int checkusername_failed;  /* Server only, set if checkusername
-	                                has already failed */
+										   has already failed */
+	unsigned int password_change; /* Server only, set if client needs to perform
+									 password change procedure after auth;
+									 used only with PAM */
 	struct timespec auth_starttime; /* Server only, time of receiving current 
 									SSH_MSG_USERAUTH_REQUEST */
 

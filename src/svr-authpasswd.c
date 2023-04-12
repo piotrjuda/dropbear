@@ -120,7 +120,14 @@ void svr_auth_password(int valid_user) {
 					"Password auth succeeded for '%s' from %s",
 					ses.authstate.pw_name,
 					svr_ses.addrstring);
-			send_msg_userauth_success();
+#if DROPBEAR_SVR_PAM_AUTH
+			if (ses.authstate.password_change != 0) {
+				send_msg_userauth_passwd_change();
+			} else
+#endif
+			{
+				send_msg_userauth_success();
+			}
 		}
 	} else {
 		dropbear_log(LOG_WARNING,
